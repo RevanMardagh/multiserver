@@ -16,6 +16,7 @@ Console commands (type at the prompt):
 Incoming data from clients prints above the prompt as:  [<id>] <data>
 """
 
+import os
 import socket
 import sys
 import threading
@@ -32,22 +33,38 @@ def ts():
 
 HOST = "0.0.0.0"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 4444
+LOG_DIR = "logs"
 
 clients = {}          # id -> socket
 addrs = {}            # id -> (ip, port)
+logfiles = {}         # id -> open file handle
 next_id = 1
 lock = threading.Lock()
+log_lock = threading.Lock()
+running = threading.Event()   # set while server should keep running
 interact_cid = None   # client id currently in interactive mode, or None
+
+
+def log_event(cid, direction, text):
+    """Append one logged line for client cid. direction: '<' in, '>' out."""
+    with log_lock:
+        f = logfiles.get(cid)
+        if f is None:
+            return
+        for line in text.splitlines():
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {direction} {line}\n")
+        f.flush()
 
 
 def recv_loop(cid, conn):
     """Print whatever a client sends, then clean up on disconnect."""
     try:
-        while True:
+        while running.is_set():
             data = conn.recv(4096)
             if not data:
                 break
             text = data.decode(errors="replace")
+            log_event(cid, "<", text)
             if cid == interact_cid:
                 # interactive mode: raw passthrough, no id/timestamp prefix
                 sys.stdout.write(text)
@@ -65,6 +82,11 @@ def recv_loop(cid, conn):
         with lock:
             clients.pop(cid, None)
             addr = addrs.pop(cid, None)
+        with log_lock:
+            f = logfiles.pop(cid, None)
+            if f is not None:
+                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] * disconnected\n")
+                f.close()
         try:
             conn.close()
         except OSError:
@@ -75,7 +97,7 @@ def recv_loop(cid, conn):
 def accept_loop(srv):
     """Accept new connections forever, assigning each an id."""
     global next_id
-    while True:
+    while running.is_set():
         try:
             conn, addr = srv.accept()
         except OSError:
@@ -85,6 +107,15 @@ def accept_loop(srv):
             next_id += 1
             clients[cid] = conn
             addrs[cid] = addr
+        fname = os.path.join(LOG_DIR, f"client_{cid}_{addr[0]}_{addr[1]}.log")
+        try:
+            f = open(fname, "a", encoding="utf-8")
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] * connected from {addr[0]}:{addr[1]}\n")
+            f.flush()
+            with log_lock:
+                logfiles[cid] = f
+        except OSError as e:
+            print(f"[!] could not open log for client {cid}: {e}")
         print(f"[{ts()}] [*] client {cid} connected from {addr[0]}:{addr[1]}")
         threading.Thread(target=recv_loop, args=(cid, conn), daemon=True).start()
 
@@ -97,6 +128,7 @@ def send_to(cid, msg):
         return
     try:
         conn.sendall((msg + "\n").encode())
+        log_event(cid, ">", msg)
     except OSError:
         print(f"[!] failed to send to {cid}")
 
@@ -170,13 +202,18 @@ def handle(line):
 
 
 def main():
+    os.makedirs(LOG_DIR, exist_ok=True)
+    running.set()
+
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT))
     srv.listen()
     print(f"[*] listening on {HOST}:{PORT}  (type 'list', '<id> msg', 'all msg', 'kick <id>', 'quit')")
+    print(f"[*] logging per-client to ./{LOG_DIR}/")
 
-    threading.Thread(target=accept_loop, args=(srv,), daemon=True).start()
+    accept_thread = threading.Thread(target=accept_loop, args=(srv,), daemon=True)
+    accept_thread.start()
 
     global interact_cid
     completer = WordCompleter(
@@ -216,13 +253,31 @@ def main():
             if not handle(line):
                 break
 
+    # graceful shutdown: stop loops, unblock the accept() and every recv()
+    print("[*] shutting down...")
+    running.clear()
+    srv.close()                       # unblocks accept_loop
     with lock:
-        for conn in clients.values():
+        conns = list(clients.values())
+    for conn in conns:
+        # shutdown() unblocks recv_loop so each thread can flush + close its log
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            conn.close()
+        except OSError:
+            pass
+    accept_thread.join(timeout=2)
+    # close any log files whose recv_loop didn't finish in time
+    with log_lock:
+        for f in logfiles.values():
             try:
-                conn.close()
+                f.close()
             except OSError:
                 pass
-    srv.close()
+        logfiles.clear()
     print("[*] shut down")
 
 
