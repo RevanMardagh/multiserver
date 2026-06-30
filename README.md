@@ -31,9 +31,17 @@ Ctrl-C and Ctrl-D do **not** exit the server — only `exit`/`quit` does.
 
 ## Built-in Aliases
 
-`whoami`, `sysinfo`, `net`, `ps`, `ports`, `users`, `admins`, `privesc`, `tasks`, `dl`
-
 Each alias has separate Windows and Linux commands. Set client OS first with `os <id> windows|linux`, then `run <id> <alias>`.
+
+| Category | Aliases |
+|---|---|
+| Identity / privilege | `whoami`, `privesc` |
+| System info | `sysinfo`, `env`, `drives`, `services`, `installed`, `av`, `tasks` |
+| Network | `net`, `arp`, `routes`, `ports`, `firewall`, `shares`, `hosts` |
+| Users / accounts | `users`, `admins`, `creds`, `wifi` |
+| Process / activity | `ps`, `history` |
+| Filesystem | `pwd`, `ls`, `ssh` |
+| Transfer / exfil | `dl`, `b64enc` |
 
 ```
 > os 1 linux

