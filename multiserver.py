@@ -27,8 +27,9 @@ import sys
 import threading
 from datetime import datetime
 
-from prompt_toolkit import PromptSession
+from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts import CompleteStyle
 
@@ -88,12 +89,12 @@ def recv_loop(cid, conn):
             text = data.decode(errors="replace")
             log_event(cid, "<", text)
             if cid == interact_cid:
-                # interactive mode: raw passthrough, no id/timestamp prefix
-                sys.stdout.write(text)
-                sys.stdout.flush()
+                # write raw bytes to real stdout, bypassing patch_stdout and text encoding
+                sys.__stdout__.buffer.write(data)
+                sys.__stdout__.buffer.flush()
             else:
-                # patch_stdout() makes this appear cleanly above the prompt
-                print(f"[{ts()}] [{cid}] {text.rstrip()}")
+                # ANSI() passes escape codes through prompt_toolkit's output layer
+                print_formatted_text(ANSI(f"[{ts()}] [{cid}] {text.rstrip()}"))
     except OSError:
         pass
     finally:
