@@ -66,7 +66,13 @@ func sanitizeForTerminal(s string) string {
 		if r < 0x20 || r == 0x7F {
 			return -1
 		}
-		if !unicode.IsPrint(r) && !unicode.IsSpace(r) {
+		if r >= 0x80 && r <= 0x9F {
+			return -1
+		}
+		if r == 0x2028 || r == 0x2029 {
+			return -1
+		}
+		if !unicode.IsPrint(r) {
 			return -1
 		}
 		return r

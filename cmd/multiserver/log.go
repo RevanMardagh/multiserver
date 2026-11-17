@@ -39,7 +39,7 @@ func NewClientLogger(dir string, cid int, ip string, port int) (*ClientLogger, e
 func (l *ClientLogger) Log(direction string, text string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	safe := newlineReplacer.Replace(text)
+	safe := sanitizeForLog(newlineReplacer.Replace(text))
 	if safe == "" {
 		return
 	}
@@ -59,6 +59,23 @@ func (l *ClientLogger) Close() error {
 func (l *ClientLogger) writeLine(direction string, text string) {
 	fmt.Fprintf(l.file, "[%s] %s %s\n", timestamp(), direction, text)
 	l.file.Sync()
+}
+
+// sanitizeForLog strips control characters that could exploit terminal
+// emulators when log files are viewed with cat/less/tail.
+func sanitizeForLog(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7F {
+			return -1
+		}
+		if r >= 0x80 && r <= 0x9F {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // timestamp returns the current time formatted as YYYY-MM-DD HH:MM:SS.

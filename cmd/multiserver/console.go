@@ -38,7 +38,9 @@ func (s *Server) RunConsole() error {
 	}
 	defer s.closeRL()
 
+	s.rlMu.Lock()
 	s.rl = rl
+	s.rlMu.Unlock()
 
 	for s.running.Load() {
 		// Update prompt based on interactive mode
