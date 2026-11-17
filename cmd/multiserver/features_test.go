@@ -192,6 +192,68 @@ func TestDispatchTagSetAndClear(t *testing.T) {
 	}
 }
 
+func TestReconnectTracking(t *testing.T) {
+	s := NewServer("127.0.0.1", 0, 10, t.TempDir())
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown()
+
+	conn1, err := net.Dial("tcp", s.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	clients := s.ListClients()
+	if len(clients) == 0 {
+		t.Fatal("no clients")
+	}
+	cid1 := clients[0].ID
+
+	s.mu.Lock()
+	s.clients[cid1].Tag = "mybox"
+	s.clients[cid1].OS = "linux"
+	s.mu.Unlock()
+
+	s.mu.Lock()
+	if s.groups["testgrp"] == nil {
+		s.groups["testgrp"] = make(map[int]bool)
+	}
+	s.groups["testgrp"][cid1] = true
+	s.mu.Unlock()
+
+	conn1.Close()
+	time.Sleep(1500 * time.Millisecond)
+
+	conn2, err := net.Dial("tcp", s.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn2.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	clients = s.ListClients()
+	if len(clients) != 1 {
+		t.Fatalf("expected 1 client, got %d", len(clients))
+	}
+	c := clients[0]
+
+	if c.Tag != "mybox" {
+		t.Errorf("expected tag 'mybox', got %q", c.Tag)
+	}
+	if c.OS != "linux" {
+		t.Errorf("expected OS 'linux', got %q", c.OS)
+	}
+
+	s.mu.RLock()
+	inGroup := s.groups["testgrp"][c.ID]
+	s.mu.RUnlock()
+	if !inGroup {
+		t.Error("expected client to be restored to group 'testgrp'")
+	}
+}
+
 func TestDispatchSendByTag(t *testing.T) {
 	s := NewServer("127.0.0.1", 0, 10, t.TempDir())
 	if err := s.Start(); err != nil {

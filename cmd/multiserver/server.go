@@ -6,12 +6,20 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/chzyer/readline"
 )
+
+// ClientHistory stores metadata from a disconnected client for reconnect tracking.
+type ClientHistory struct {
+	Tag    string
+	OS     string
+	Groups []string // group names the client belonged to
+}
 
 // Server manages the TCP listener, connected clients, and aliases.
 type Server struct {
@@ -21,6 +29,7 @@ type Server struct {
 	interactCID  atomic.Int32 // -1 = none, else client ID
 	aliases      map[string]*Alias
 	groups       map[string]map[int]bool // group name -> set of client IDs
+	history      map[string]*ClientHistory // IP -> last known metadata
 	logDir       string
 	maxClients   int
 	listener     net.Listener
@@ -41,6 +50,7 @@ func NewServer(bind string, port, maxClients int, logDir string) *Server {
 		nextID:     1,
 		aliases:    defaultAliases(),
 		groups:     make(map[string]map[int]bool),
+		history:    make(map[string]*ClientHistory),
 		logDir:     logDir,
 		maxClients: maxClients,
 		bind:       bind,
@@ -177,10 +187,41 @@ func (s *Server) acceptLoop() {
 			Addr: conn.RemoteAddr(),
 			Log:  logger,
 		}
+
+		var restored *ClientHistory
+		if h, ok := s.history[ip]; ok {
+			client.Tag = h.Tag
+			client.OS = h.OS
+			if client.OS != "" {
+				client.detected = true
+			}
+			restored = h
+			for _, gname := range h.Groups {
+				if s.groups[gname] == nil {
+					s.groups[gname] = make(map[int]bool)
+				}
+				s.groups[gname][cid] = true
+			}
+			delete(s.history, ip)
+		}
+
 		s.clients[cid] = client
 		s.mu.Unlock()
 
 		s.safePrintf("[%s] [*] client %d connected from %s:%d\n", ts(), cid, ip, port)
+		if restored != nil {
+			parts := []string{}
+			if restored.Tag != "" {
+				parts = append(parts, fmt.Sprintf("tag=%s", restored.Tag))
+			}
+			if restored.OS != "" {
+				parts = append(parts, fmt.Sprintf("os=%s", restored.OS))
+			}
+			if len(restored.Groups) > 0 {
+				parts = append(parts, fmt.Sprintf("groups=%v", restored.Groups))
+			}
+			s.safePrintf("[*] client %d: restored from previous session (%s)\n", cid, strings.Join(parts, ", "))
+		}
 
 		s.wg.Add(1)
 		go client.recvLoop(s)
@@ -236,6 +277,22 @@ func (s *Server) RemoveClient(cid int) {
 	s.mu.Lock()
 	client, ok := s.clients[cid]
 	if ok {
+		if tcpAddr, isT := client.Addr.(*net.TCPAddr); isT {
+			ip := tcpAddr.IP.String()
+			var groups []string
+			for name, members := range s.groups {
+				if members[cid] {
+					groups = append(groups, name)
+				}
+			}
+			if client.Tag != "" || client.OS != "" || len(groups) > 0 {
+				s.history[ip] = &ClientHistory{
+					Tag:    client.Tag,
+					OS:     client.OS,
+					Groups: groups,
+				}
+			}
+		}
 		delete(s.clients, cid)
 		for _, members := range s.groups {
 			delete(members, cid)
