@@ -5,8 +5,10 @@ Multi-client TCP listener with an interactive console. Manage many reverse shell
 ## Setup
 
 ```bash
-pip install prompt_toolkit
-python multiserver.py [port]   # default: 4444
+pip install -r requirements.txt
+python multiserver.py                          # default: 0.0.0.0:4444
+python multiserver.py --port 8080 --bind 127.0.0.1
+python multiserver.py -p 8080 --max-connections 50
 ```
 
 Logs written to `./logs/client_<id>_<ip>_<port>.log`.
@@ -56,3 +58,15 @@ Each alias has separate Windows and Linux commands. Set client OS first with `os
 - Per-client log files
 - Interactive passthrough mode (raw bytes, no buffering)
 - Graceful shutdown flushes all logs
+- Configurable max connections (default 100)
+
+## Security
+
+**This tool is intended for use in controlled lab/training environments only.**
+
+- No authentication -- any host that can reach the listening port can connect
+- No TLS -- all traffic is plaintext
+- Binds `0.0.0.0` by default -- listens on all interfaces
+- No rate limiting beyond the max-connections cap
+
+Do not expose the listener to untrusted networks. Use SSH tunnels, VPNs, or firewall rules to restrict access when operating outside an isolated lab.

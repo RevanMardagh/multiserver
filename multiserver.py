@@ -4,7 +4,7 @@ Tiny multi-client TCP listener with per-connection messaging and a
 proper editable prompt (backspace, arrow keys, command history).
 
 Setup:  pip install prompt_toolkit
-Run:    python3 multiserver.py [port]        (default port 4444)
+Run:    python3 multiserver.py [--port 4444] [--bind 0.0.0.0]
 
 Console commands (type at the prompt):
     list                 show connected clients
@@ -21,8 +21,10 @@ Console commands (type at the prompt):
 Incoming data from clients prints above the prompt as:  [<id>] <data>
 """
 
+import argparse
 import os
 import socket
+import string
 import sys
 import threading
 from datetime import datetime
@@ -39,8 +41,9 @@ def ts():
     return datetime.now().strftime("%H:%M:%S")
 
 HOST = "0.0.0.0"
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 4444
+PORT = 4444
 LOG_DIR = "logs"
+MAX_CONNECTIONS = 100
 
 clients = {}          # id -> socket
 addrs = {}            # id -> (ip, port)
@@ -112,14 +115,20 @@ def log_event(cid, direction, text):
 def recv_loop(cid, conn):
     """Print whatever a client sends, then clean up on disconnect."""
     global interact_cid
+    conn.settimeout(1.0)
     try:
         while running.is_set():
-            data = conn.recv(4096)
+            try:
+                data = conn.recv(4096)
+            except socket.timeout:
+                continue
             if not data:
                 break
             text = data.decode(errors="replace")
             log_event(cid, "<", text)
-            if cid == interact_cid:
+            with lock:
+                interactive = (cid == interact_cid)
+            if interactive:
                 # write raw bytes to real stdout, bypassing patch_stdout and text encoding
                 sys.__stdout__.buffer.write(data)
                 sys.__stdout__.buffer.flush()
@@ -129,8 +138,11 @@ def recv_loop(cid, conn):
     except OSError:
         pass
     finally:
-        if cid == interact_cid:
-            interact_cid = None
+        with lock:
+            was_interactive = (cid == interact_cid)
+            if was_interactive:
+                interact_cid = None
+        if was_interactive:
             print(f"\n[*] interacted client {cid} gone, back to console")
         with lock:
             clients.pop(cid, None)
@@ -157,6 +169,14 @@ def accept_loop(srv):
         except OSError:
             break
         with lock:
+            if len(clients) >= MAX_CONNECTIONS:
+                print(f"[!] connection limit ({MAX_CONNECTIONS}) reached, "
+                      f"rejecting {addr[0]}:{addr[1]}")
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                continue
             cid = next_id
             next_id += 1
             clients[cid] = conn
@@ -187,6 +207,12 @@ def send_to(cid, msg):
         print(f"[!] failed to send to {cid}")
 
 
+def _count_format_fields(fmt):
+    """Count the number of positional format fields in a format string."""
+    return sum(1 for _, name, _, _ in string.Formatter().parse(fmt)
+               if name is not None)
+
+
 def run_alias(cid, name, args=()):
     """Send the OS-appropriate command for alias <name> to client <cid>."""
     spec = aliases.get(name)
@@ -204,7 +230,7 @@ def run_alias(cid, name, args=()):
     try:
         cmd = cmd.format(*args)
     except IndexError:
-        needed = cmd.count("{")
+        needed = _count_format_fields(cmd)
         print(f"[!] alias '{name}' needs {needed} arg(s):  run {cid} {name} <arg0> [arg1 ...]")
         return
     print(f"[*] alias '{name}' -> client {cid} ({ostype}): {cmd}")
@@ -227,142 +253,219 @@ HELP = """\
 """
 
 
-def handle(line):
-    """Process one console command. Return False to quit."""
-    if line in ("quit", "exit"):
-        return False
+# ---- command handlers ------------------------------------------------
+# Each takes (line, parts) and returns True to continue, False to quit.
 
-    if line in ("help", "?"):
-        print(HELP)
+def cmd_exit(line, parts):
+    return False
+
+
+def cmd_help(line, parts):
+    print(HELP)
+    return True
+
+
+def cmd_interact(line, parts):
+    global interact_cid
+    try:
+        cid = int(parts[1])
+    except (IndexError, ValueError):
+        print("[!] usage: interact <id>")
         return True
-
-    parts0 = line.split()
-    if parts0 and parts0[0] in ("interact", "i"):
-        global interact_cid
-        try:
-            cid = int(parts0[1])
-        except (IndexError, ValueError):
-            print("[!] usage: interact <id>")
-            return True
-        with lock:
-            conn = clients.get(cid)
-        if conn is None:
+    with lock:
+        if cid not in clients:
             print(f"[!] no client with id {cid}")
             return True
         interact_cid = cid
-        print(f"[*] interactive with client {cid}. '~.' or Ctrl-C to exit.")
-        return True
+    print(f"[*] interactive with client {cid}. '~.' or Ctrl-C to exit.")
+    return True
 
-    if line in ("list", "ls"):
+
+def cmd_list(line, parts):
+    with lock:
+        if not clients:
+            print("    (no clients)")
+        for cid in sorted(clients):
+            ip, port = addrs[cid]
+            ot = os_types.get(cid, "?")
+            print(f"    {cid}: {ip}:{port}  [{ot}]")
+    return True
+
+
+def cmd_os(line, parts):
+    if len(parts) == 1:
         with lock:
-            if not clients:
-                print("    (no clients)")
-            for cid in sorted(clients):
-                ip, port = addrs[cid]
-                ot = os_types.get(cid, "?")
-                print(f"    {cid}: {ip}:{port}  [{ot}]")
+            flagged = {c: os_types[c] for c in sorted(os_types)}
+        if not flagged:
+            print("    (no OS flags set)")
+        for c, ot in flagged.items():
+            print(f"    {c}: {ot}")
         return True
-
-    if parts0 and parts0[0] == "os":
-        if len(parts0) == 1:
-            with lock:
-                flagged = {c: os_types[c] for c in sorted(os_types)}
-            if not flagged:
-                print("    (no OS flags set)")
-            for c, ot in flagged.items():
-                print(f"    {c}: {ot}")
-            return True
-        if len(parts0) == 3 and parts0[1].isdigit() and parts0[2] in ("windows", "linux"):
-            cid = int(parts0[1])
-            with lock:
-                if cid not in clients:
-                    print(f"[!] no client with id {cid}")
-                    return True
-                os_types[cid] = parts0[2]
-            print(f"[*] client {cid} flagged {parts0[2]}")
-            return True
-        print("[!] usage: os <id> <windows|linux>")
-        return True
-
-    if parts0 and parts0[0] == "alias":
-        if len(parts0) == 1:
-            if not aliases:
-                print("    (no aliases)")
-            for name in sorted(aliases):
-                spec = aliases[name]
-                print(f"    {name}:")
-                print(f"        windows: {spec.get('windows', '-')}")
-                print(f"        linux:   {spec.get('linux', '-')}")
-            return True
-        if parts0[1] == "add":
-            # alias add <name> <win-cmd> ::: <lin-cmd>
-            body = line.split(maxsplit=3)
-            if len(body) < 4 or ":::" not in body[3]:
-                print("[!] usage: alias add <name> <win-cmd> ::: <lin-cmd>")
-                return True
-            name = body[2]
-            win_cmd, lin_cmd = (s.strip() for s in body[3].split(":::", 1))
-            if not win_cmd or not lin_cmd:
-                print("[!] usage: alias add <name> <win-cmd> ::: <lin-cmd>")
-                return True
-            aliases[name] = {"windows": win_cmd, "linux": lin_cmd}
-            print(f"[*] alias '{name}' set  (windows: {win_cmd} | linux: {lin_cmd})")
-            return True
-        if parts0[1] == "del":
-            if len(parts0) != 3 or parts0[2] not in aliases:
-                print("[!] usage: alias del <name>")
-                return True
-            aliases.pop(parts0[2])
-            print(f"[*] alias '{parts0[2]}' removed")
-            return True
-        print("[!] usage: alias | alias add <name> <win> ::: <lin> | alias del <name>")
-        return True
-
-    if parts0 and parts0[0] == "run":
-        if len(parts0) < 3 or not parts0[1].isdigit():
-            print("[!] usage: run <id> <alias> [arg0] [arg1] ...")
-            return True
-        run_alias(int(parts0[1]), parts0[2], parts0[3:])
-        return True
-
-    if line.startswith("all "):
-        msg = line[4:]
-        with lock:
-            ids = list(clients)
-        for cid in ids:
-            send_to(cid, msg)
-        return True
-
-    if line.startswith("kick "):
+    if len(parts) == 3 and parts[2] in ("windows", "linux"):
         try:
-            cid = int(line.split()[1])
-        except (IndexError, ValueError):
-            print("[!] usage: kick <id>")
+            cid = int(parts[1])
+        except ValueError:
+            print("[!] usage: os <id> <windows|linux>")
             return True
         with lock:
-            conn = clients.get(cid)
-        if conn:
-            # shutdown() unblocks the recv() in recv_loop so it can clean up.
-            # close() alone may leave that thread blocked, esp. on Windows.
-            try:
-                conn.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            conn.close()
-        else:
-            print(f"[!] no client with id {cid}")
+            if cid not in clients:
+                print(f"[!] no client with id {cid}")
+                return True
+            os_types[cid] = parts[2]
+        print(f"[*] client {cid} flagged {parts[2]}")
         return True
+    print("[!] usage: os <id> <windows|linux>")
+    return True
 
+
+def cmd_alias(line, parts):
+    if len(parts) == 1:
+        if not aliases:
+            print("    (no aliases)")
+        for name in sorted(aliases):
+            spec = aliases[name]
+            print(f"    {name}:")
+            print(f"        windows: {spec.get('windows', '-')}")
+            print(f"        linux:   {spec.get('linux', '-')}")
+        return True
+    if parts[1] == "add":
+        # alias add <name> <win-cmd> ::: <lin-cmd>
+        body = line.split(maxsplit=3)
+        if len(body) < 4 or ":::" not in body[3]:
+            print("[!] usage: alias add <name> <win-cmd> ::: <lin-cmd>")
+            return True
+        name = body[2]
+        win_cmd, lin_cmd = (s.strip() for s in body[3].split(":::", 1))
+        if not win_cmd or not lin_cmd:
+            print("[!] usage: alias add <name> <win-cmd> ::: <lin-cmd>")
+            return True
+        aliases[name] = {"windows": win_cmd, "linux": lin_cmd}
+        print(f"[*] alias '{name}' set  (windows: {win_cmd} | linux: {lin_cmd})")
+        return True
+    if parts[1] == "del":
+        if len(parts) != 3 or parts[2] not in aliases:
+            print("[!] usage: alias del <name>")
+            return True
+        aliases.pop(parts[2])
+        print(f"[*] alias '{parts[2]}' removed")
+        return True
+    print("[!] usage: alias | alias add <name> <win> ::: <lin> | alias del <name>")
+    return True
+
+
+def cmd_run(line, parts):
+    if len(parts) < 3:
+        print("[!] usage: run <id> <alias> [arg0] [arg1] ...")
+        return True
+    try:
+        cid = int(parts[1])
+    except ValueError:
+        print("[!] usage: run <id> <alias> [arg0] [arg1] ...")
+        return True
+    run_alias(cid, parts[2], parts[3:])
+    return True
+
+
+def cmd_all(line, parts):
+    if len(parts) < 2:
+        print("[!] usage: all <message>")
+        return True
+    msg = line[4:]
+    with lock:
+        ids = list(clients)
+    for cid in ids:
+        send_to(cid, msg)
+    return True
+
+
+def cmd_kick(line, parts):
+    try:
+        cid = int(parts[1])
+    except (IndexError, ValueError):
+        print("[!] usage: kick <id>")
+        return True
+    with lock:
+        conn = clients.get(cid)
+    if conn:
+        # shutdown() unblocks the recv() in recv_loop so it can clean up.
+        # close() alone may leave that thread blocked, esp. on Windows.
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        conn.close()
+    else:
+        print(f"[!] no client with id {cid}")
+    return True
+
+
+COMMANDS = {
+    "quit":      cmd_exit,
+    "exit":      cmd_exit,
+    "help":      cmd_help,
+    "?":         cmd_help,
+    "interact":  cmd_interact,
+    "i":         cmd_interact,
+    "list":      cmd_list,
+    "ls":        cmd_list,
+    "os":        cmd_os,
+    "alias":     cmd_alias,
+    "run":       cmd_run,
+    "all":       cmd_all,
+    "kick":      cmd_kick,
+}
+
+
+def handle(line):
+    """Process one console command. Return False to quit."""
+    parts = line.split()
+    if not parts:
+        return True
+    handler = COMMANDS.get(parts[0])
+    if handler is not None:
+        return handler(line, parts)
     # default: "<id> <message>"
-    parts = line.split(maxsplit=1)
-    if len(parts) == 2 and parts[0].isdigit():
-        send_to(int(parts[0]), parts[1])
+    split2 = line.split(maxsplit=1)
+    if len(split2) == 2:
+        try:
+            cid = int(split2[0])
+        except ValueError:
+            print("[!] usage: <id> <message>   (try 'list')")
+            return True
+        send_to(cid, split2[1])
     else:
         print("[!] usage: <id> <message>   (try 'list')")
     return True
 
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Multi-client TCP listener for reverse shell management"
+    )
+    parser.add_argument(
+        "-p", "--port", type=int, default=4444,
+        help="port to listen on (default: 4444)"
+    )
+    parser.add_argument(
+        "-b", "--bind", default="0.0.0.0",
+        help="address to bind to (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--max-connections", type=int, default=100,
+        help="maximum simultaneous connections (default: 100)"
+    )
+    return parser.parse_args()
+
+
 def main():
+    global HOST, PORT, MAX_CONNECTIONS, interact_cid
+
+    args = parse_args()
+    HOST = args.bind
+    PORT = args.port
+    MAX_CONNECTIONS = args.max_connections
+
     os.makedirs(LOG_DIR, exist_ok=True)
     running.set()
 
@@ -370,13 +473,14 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT))
     srv.listen()
-    print(f"[*] listening on {HOST}:{PORT}  (commands: list, <id> <msg>, all <msg>, kick <id>, interact <id>, os <id> <windows|linux>, alias, run <id> <alias>, exit)")
+    print(f"[*] listening on {HOST}:{PORT}  (max {MAX_CONNECTIONS} connections)")
+    print(f"[*] commands: list, <id> <msg>, all <msg>, kick <id>, interact <id>, "
+          f"os <id> <windows|linux>, alias, run <id> <alias>, help, exit")
     print(f"[*] logging per-client to ./{LOG_DIR}/")
 
     accept_thread = threading.Thread(target=accept_loop, args=(srv,), daemon=True)
     accept_thread.start()
 
-    global interact_cid
     completer = WordCompleter(
         ["list", "ls", "all", "kick", "interact", "i", "os", "alias", "run", "help", "exit", "quit"],
         ignore_case=True,
@@ -390,26 +494,33 @@ def main():
     # so it never corrupts the line you're editing.
     with patch_stdout():
         while True:
-            prompt_str = f"[{interact_cid}]$ " if interact_cid is not None else "> "
+            with lock:
+                current_cid = interact_cid
+            prompt_str = f"[{current_cid}]$ " if current_cid is not None else "> "
             try:
                 raw = session.prompt(prompt_str)
             except KeyboardInterrupt:
-                if interact_cid is not None:
-                    # Ctrl-C leaves interactive mode, not the server.
-                    print(f"[*] left interactive mode (client {interact_cid})")
-                    interact_cid = None
+                with lock:
+                    current_cid = interact_cid
+                    if current_cid is not None:
+                        interact_cid = None
+                if current_cid is not None:
+                    print(f"[*] left interactive mode (client {current_cid})")
                 continue
             except EOFError:
                 # Ctrl-D: ignore. Only 'exit'/'quit' shuts down.
                 continue
 
-            if interact_cid is not None:
+            with lock:
+                current_cid = interact_cid
+            if current_cid is not None:
                 # raw passthrough mode
                 if raw.strip() == "~.":
-                    print(f"[*] left interactive mode (client {interact_cid})")
-                    interact_cid = None
+                    with lock:
+                        interact_cid = None
+                    print(f"[*] left interactive mode (client {current_cid})")
                     continue
-                send_to(interact_cid, raw)
+                send_to(current_cid, raw)
                 continue
 
             line = raw.strip()
