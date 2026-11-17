@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +28,8 @@ var commands = map[string]CmdHandler{
 	"alias":    cmdAlias,
 	"run":      cmdRun,
 	"all":      cmdAll,
+	"download": cmdDownload,
+	"upload":   cmdUpload,
 }
 
 // Dispatch parses a line and routes it to the appropriate handler.
@@ -309,6 +314,120 @@ func cmdAll(s *Server, args []string) bool {
 	return true
 }
 
+func cmdDownload(s *Server, args []string) bool {
+	if len(args) < 3 {
+		fmt.Println("[!] usage: download <id> <remote_path>")
+		return true
+	}
+	cid, err := strconv.Atoi(args[1])
+	if err != nil {
+		fmt.Println("[!] usage: download <id> <remote_path>")
+		return true
+	}
+	remotePath := strings.Join(args[2:], " ")
+
+	client := s.GetClient(cid)
+	if client == nil {
+		fmt.Printf("[!] no client with id %d\n", cid)
+		return true
+	}
+	if client.OS == "" {
+		fmt.Printf("[!] client %d has no OS flag; use 'os %d windows|linux'\n", cid, cid)
+		return true
+	}
+	if client.Capture != nil && !client.Capture.IsDone() {
+		fmt.Printf("[!] client %d already has a download in progress\n", cid)
+		return true
+	}
+
+	marker := randomHex(6)
+	startMarker := "===DLSTART_" + marker + "==="
+	endMarker := "===DLEND_" + marker + "==="
+
+	localFile := filepath.Base(remotePath)
+	// Strip any path separators that might remain (Windows backslash)
+	localFile = filepath.Base(strings.ReplaceAll(remotePath, "\\", "/"))
+
+	capture := &CaptureState{
+		startMarker: startMarker,
+		endMarker:   endMarker,
+		localPath:   localFile,
+		done:        make(chan struct{}),
+	}
+
+	s.mu.Lock()
+	if c, ok := s.clients[cid]; ok {
+		c.Capture = capture
+	}
+	s.mu.Unlock()
+
+	cmd := buildDownloadCommand(client.OS, remotePath, startMarker, endMarker)
+	if err := s.SendTo(cid, cmd); err != nil {
+		fmt.Printf("[!] %v\n", err)
+		s.mu.Lock()
+		if c, ok := s.clients[cid]; ok {
+			c.Capture = nil
+		}
+		s.mu.Unlock()
+		return true
+	}
+
+	fmt.Printf("[*] download started: sent base64 command to client %d\n", cid)
+	fmt.Printf("[*] file will be saved as: %s\n", localFile)
+	return true
+}
+
+func cmdUpload(s *Server, args []string) bool {
+	if len(args) < 4 {
+		fmt.Println("[!] usage: upload <id> <local_path> <remote_path>")
+		return true
+	}
+	cid, err := strconv.Atoi(args[1])
+	if err != nil {
+		fmt.Println("[!] usage: upload <id> <local_path> <remote_path>")
+		return true
+	}
+	localPath := args[2]
+	remotePath := strings.Join(args[3:], " ")
+
+	client := s.GetClient(cid)
+	if client == nil {
+		fmt.Printf("[!] no client with id %d\n", cid)
+		return true
+	}
+	if client.OS == "" {
+		fmt.Printf("[!] client %d has no OS flag; use 'os %d windows|linux'\n", cid, cid)
+		return true
+	}
+
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		fmt.Printf("[!] cannot read local file: %v\n", err)
+		return true
+	}
+
+	if len(data) > uploadMaxSize {
+		fmt.Printf("[!] file too large (%d bytes, max %d bytes)\n", len(data), uploadMaxSize)
+		return true
+	}
+	if len(data) > uploadWarnSize {
+		fmt.Printf("[*] warning: large file (%d bytes), transfer may be slow\n", len(data))
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(data)
+	cmds := buildUploadCommands(client.OS, remotePath, b64)
+
+	fmt.Printf("[*] uploading %s (%d bytes, %d chunk(s)) to client %d\n", localPath, len(data), len(cmds), cid)
+	for _, cmd := range cmds {
+		if err := s.SendTo(cid, cmd); err != nil {
+			fmt.Printf("[!] send failed: %v\n", err)
+			return true
+		}
+	}
+	fmt.Printf("[*] upload complete: sent to client %d -> %s\n", cid, remotePath)
+	return true
+}
+
 const helpText = `  list / ls                         show connected clients
   <id> <message>                    send message to client
   all <message>                     broadcast to all clients
@@ -316,6 +435,8 @@ const helpText = `  list / ls                         show connected clients
   interact <id> / i <id>            raw passthrough mode (Ctrl-C or ~. to exit)
   os                                list OS flags
   os <id> <windows|linux>           set client OS flag
+  download <id> <remote_path>       download file from client (base64 capture)
+  upload <id> <local> <remote>      upload local file to client
   alias                             list aliases
   alias add <name> <win> ::: <lin>  define alias
   alias del <name>                  remove alias

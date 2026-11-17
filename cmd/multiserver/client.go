@@ -10,11 +10,12 @@ import (
 
 // Client represents a connected reverse shell client.
 type Client struct {
-	ID   int
-	Conn net.Conn
-	Addr net.Addr
-	OS   string // "windows", "linux", or ""
-	Log  *ClientLogger
+	ID      int
+	Conn    net.Conn
+	Addr    net.Addr
+	OS      string // "windows", "linux", or ""
+	Log     *ClientLogger
+	Capture *CaptureState // non-nil during file download capture
 }
 
 // recvLoop reads data from the client connection in a loop.
@@ -34,6 +35,13 @@ func (c *Client) recvLoop(s *Server) {
 
 			if c.Log != nil {
 				c.Log.Log("<", text)
+			}
+
+			if c.Capture != nil {
+				c.Capture.Process(text, s, c.ID)
+				if c.Capture != nil && c.Capture.IsDone() {
+					c.Capture = nil
+				}
 			}
 
 			if s.InteractCID() == int32(c.ID) {
