@@ -2,16 +2,33 @@
 
 Multi-client TCP listener with an interactive console. Manage many reverse shells or netcat connections from one terminal.
 
+Single static binary, cross-platform (Windows, Linux, macOS), race-free concurrency.
+
 ## Setup
 
 ```bash
-pip install -r requirements.txt
-python multiserver.py                          # default: 0.0.0.0:4444
-python multiserver.py --port 8080 --bind 127.0.0.1
-python multiserver.py -p 8080 --max-connections 50
+# Install from source
+go install github.com/RevanMardagh/multiserver/cmd/multiserver@latest
+
+# Or build locally
+go build -o multiserver ./cmd/multiserver
+./multiserver -p 4444
+
+# Cross-compile
+GOOS=linux GOARCH=amd64 go build -o multiserver-linux ./cmd/multiserver
+GOOS=darwin GOARCH=arm64 go build -o multiserver-mac ./cmd/multiserver
 ```
 
 Logs written to `./logs/client_<id>_<ip>_<port>.log`.
+
+## Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `-p`, `-port` | `4444` | Listen port |
+| `-b`, `-bind` | `0.0.0.0` | Bind address |
+| `-m`, `-max` | `100` | Max concurrent clients |
+| `-l`, `-logdir` | `logs` | Log directory |
 
 ## Console Commands
 
@@ -29,7 +46,7 @@ Logs written to `./logs/client_<id>_<ip>_<port>.log`.
 | `run <id> <name> [arg0...]` | Run alias on client (OS-appropriate) |
 | `exit` / `quit` | Shut down server |
 
-Ctrl-C and Ctrl-D do **not** exit the server — only `exit`/`quit` does.
+Ctrl-C and Ctrl-D do **not** exit the server -- only `exit`/`quit` does.
 
 ## Built-in Aliases
 
@@ -43,7 +60,7 @@ Each alias has separate Windows and Linux commands. Set client OS first with `os
 | Users / accounts | `users`, `admins`, `creds`, `wifi` |
 | Process / activity | `ps`, `history` |
 | Filesystem | `pwd`, `ls`, `ssh` |
-| Transfer / exfil | `dl`, `b64enc` |
+| Transfer / exfil | `dl`, `download`, `b64enc` |
 
 ```
 > os 1 linux
@@ -53,10 +70,13 @@ Each alias has separate Windows and Linux commands. Set client OS first with `os
 
 ## Features
 
-- Tab completion for commands
+- Single static binary (no runtime dependencies)
+- Cross-platform: Windows, Linux, macOS
+- Race-free concurrency (provable with `go test -race`)
+- Tab completion for commands, client IDs, and alias names
 - Command history (arrow keys)
-- Per-client log files
-- Interactive passthrough mode (raw bytes, no buffering)
+- Per-client log files with per-client mutex (no global lock contention)
+- Interactive passthrough mode (raw bytes, ANSI codes)
 - Graceful shutdown flushes all logs
 - Configurable max connections (default 100)
 

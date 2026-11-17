@@ -4,3 +4,9 @@ __pycache__/
 *.pyc
 .venv/
 *.log
+
+# Go
+multiserver
+multiserver.exe
+*.exe
+dist/
