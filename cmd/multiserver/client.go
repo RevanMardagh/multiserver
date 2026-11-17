@@ -10,11 +10,13 @@ import (
 
 // Client represents a connected reverse shell client.
 type Client struct {
-	ID   int
-	Conn net.Conn
-	Addr net.Addr
-	OS   string // "windows", "linux", or ""
-	Log  *ClientLogger
+	ID       int
+	Conn     net.Conn
+	Addr     net.Addr
+	OS       string // "windows", "linux", or ""
+	Tag      string
+	Log      *ClientLogger
+	detected bool
 }
 
 // recvLoop reads data from the client connection in a loop.
@@ -31,6 +33,20 @@ func (c *Client) recvLoop(s *Server) {
 		if n > 0 {
 			raw := buf[:n]
 			text := strings.ToValidUTF8(string(raw), "�")
+
+			if !c.detected {
+				c.detected = true
+				if c.OS == "" {
+					if osName := detectOS(text); osName != "" {
+						s.mu.Lock()
+						if cl, ok := s.clients[c.ID]; ok {
+							cl.OS = osName
+						}
+						s.mu.Unlock()
+						s.safePrintf("[*] client %d auto-detected as %s\n", c.ID, osName)
+					}
+				}
+			}
 
 			if c.Log != nil {
 				c.Log.Log("<", text)
@@ -82,4 +98,39 @@ func sanitizeForTerminal(s string) string {
 // ts returns the current time as HH:MM:SS for console output.
 func ts() string {
 	return time.Now().Format("15:04:05")
+}
+
+// detectOS examines shell prompt text and returns "windows", "linux",
+// or "" if the OS cannot be determined.
+func detectOS(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimRight(line, " \t\r")
+		if trimmed == "" {
+			continue
+		}
+
+		// Windows indicators
+		if strings.Contains(trimmed, `C:\`) || strings.Contains(trimmed, `D:\`) {
+			return "windows"
+		}
+		if strings.HasPrefix(trimmed, "PS ") || strings.HasPrefix(trimmed, "PS>") {
+			return "windows"
+		}
+		if len(trimmed) >= 3 && trimmed[1] == ':' && trimmed[2] == '\\' &&
+			((trimmed[0] >= 'A' && trimmed[0] <= 'Z') || (trimmed[0] >= 'a' && trimmed[0] <= 'z')) {
+			return "windows"
+		}
+
+		// Linux indicators
+		if strings.HasSuffix(trimmed, "$") || strings.HasSuffix(trimmed, "#") {
+			return "linux"
+		}
+		if strings.Contains(trimmed, "/home/") || strings.Contains(trimmed, "/root/") {
+			return "linux"
+		}
+		if strings.Contains(trimmed, "bash") || strings.Contains(trimmed, "sh-") {
+			return "linux"
+		}
+	}
+	return ""
 }

@@ -37,7 +37,7 @@ func main() {
 	}
 
 	fmt.Printf("[*] listening on %s:%d  (max %d connections)\n", bind, port, maxClients)
-	fmt.Printf("[*] commands: list, <id> <msg>, all <msg>, kick <id>, interact <id>, os <id> <windows|linux>, alias, run <id> <alias>, help, exit\n")
+	fmt.Printf("[*] commands: list, <id> <msg>, all <msg>, kick <id>, interact <id>, os <id> <windows|linux>, tag <id> <name>, alias, run <id> <alias>, help, exit\n")
 	fmt.Printf("[*] logging per-client to ./%s/\n", logDir)
 
 	// Handle OS signals for graceful shutdown (non-interactive Ctrl-C)

