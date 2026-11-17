@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -41,7 +40,7 @@ func (c *Client) recvLoop(s *Server) {
 				os.Stdout.Write(raw)
 			} else {
 				// Normal mode: formatted output
-				fmt.Printf("[%s] [%d] %s\n", ts(), c.ID, strings.TrimRight(text, "\r\n"))
+				s.safePrintf("[%s] [%d] %s\n", ts(), c.ID, strings.TrimRight(text, "\r\n"))
 			}
 		}
 		if err != nil {

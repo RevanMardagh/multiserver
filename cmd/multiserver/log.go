@@ -15,6 +15,8 @@ type ClientLogger struct {
 	file *os.File
 }
 
+var newlineReplacer = strings.NewReplacer("\n", "\\n", "\r", "\\r")
+
 // NewClientLogger creates a log file for a client. The file is named
 // client_{cid}_{ip}_{port}.log inside dir. It writes an initial
 // "connected" line and returns the logger ready for use.
@@ -37,7 +39,7 @@ func NewClientLogger(dir string, cid int, ip string, port int) (*ClientLogger, e
 func (l *ClientLogger) Log(direction string, text string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	safe := strings.NewReplacer("\n", "\\n", "\r", "\\r").Replace(text)
+	safe := newlineReplacer.Replace(text)
 	if safe == "" {
 		return
 	}
@@ -46,11 +48,11 @@ func (l *ClientLogger) Log(direction string, text string) {
 }
 
 // Close writes a disconnect line and closes the underlying file.
-func (l *ClientLogger) Close() {
+func (l *ClientLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.writeLine("*", "disconnected")
-	l.file.Close()
+	return l.file.Close()
 }
 
 // writeLine writes a single formatted log line. Caller must hold mu.

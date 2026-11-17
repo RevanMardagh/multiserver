@@ -162,20 +162,17 @@ func cmdOS(s *Server, args []string) bool {
 
 func cmdAlias(s *Server, args []string) bool {
 	if len(args) == 1 {
-		// List aliases
 		s.mu.RLock()
 		names := make([]string, 0, len(s.aliases))
 		for name := range s.aliases {
 			names = append(names, name)
 		}
-		s.mu.RUnlock()
-
 		if len(names) == 0 {
+			s.mu.RUnlock()
 			fmt.Println("    (no aliases)")
 			return true
 		}
 		sort.Strings(names)
-		s.mu.RLock()
 		for _, name := range names {
 			a := s.aliases[name]
 			fmt.Printf("    %s:\n", name)

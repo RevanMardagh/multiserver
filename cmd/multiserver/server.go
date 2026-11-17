@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -13,19 +15,20 @@ import (
 
 // Server manages the TCP listener, connected clients, and aliases.
 type Server struct {
-	mu          sync.RWMutex
-	clients     map[int]*Client
-	nextID      int
-	interactCID atomic.Int32  // -1 = none, else client ID
-	aliases     map[string]*Alias
-	logDir      string
-	maxClients  int
-	listener    net.Listener
-	running     atomic.Bool
-	wg          sync.WaitGroup
-	bind        string
-	port        int
-	rl          *readline.Instance
+	mu           sync.RWMutex
+	clients      map[int]*Client
+	nextID       int
+	interactCID  atomic.Int32 // -1 = none, else client ID
+	aliases      map[string]*Alias
+	logDir       string
+	maxClients   int
+	listener     net.Listener
+	running      atomic.Bool
+	shutdownOnce sync.Once
+	wg           sync.WaitGroup
+	bind         string
+	port         int
+	rl           *readline.Instance
 }
 
 // NewServer creates a new Server with the given configuration.
@@ -71,38 +74,42 @@ func (s *Server) Addr() net.Addr {
 // Shutdown performs a graceful shutdown: stops accepting, closes all
 // connections, waits for goroutines to finish.
 func (s *Server) Shutdown() {
-	if !s.running.Load() {
-		return
-	}
-	s.running.Store(false)
+	s.shutdownOnce.Do(func() {
+		s.running.Store(false)
+		if s.listener != nil {
+			s.listener.Close()
+		}
+		s.mu.Lock()
+		conns := make([]net.Conn, 0, len(s.clients))
+		for _, c := range s.clients {
+			conns = append(conns, c.Conn)
+		}
+		s.mu.Unlock()
+		for _, conn := range conns {
+			conn.Close()
+		}
+		done := make(chan struct{})
+		go func() {
+			s.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+	})
+}
 
-	// Close the listener to unblock acceptLoop.
-	if s.listener != nil {
-		s.listener.Close()
-	}
-
-	// Copy all conns and close them.
-	s.mu.Lock()
-	conns := make([]net.Conn, 0, len(s.clients))
-	for _, c := range s.clients {
-		conns = append(conns, c.Conn)
-	}
-	s.mu.Unlock()
-
-	for _, conn := range conns {
-		conn.Close()
-	}
-
-	// Wait for goroutines with a timeout.
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
+// safePrintf writes formatted output through readline's safe writer
+// when active, falling back to os.Stdout otherwise. Use from background
+// goroutines (acceptLoop, recvLoop, RemoveClient) to avoid corrupting
+// the readline prompt.
+func (s *Server) safePrintf(format string, a ...interface{}) {
+	msg := fmt.Sprintf(format, a...)
+	if s.rl != nil {
+		io.WriteString(s.rl.Stdout(), msg)
+	} else {
+		io.WriteString(os.Stdout, msg)
 	}
 }
 
@@ -124,7 +131,7 @@ func (s *Server) acceptLoop() {
 		if len(s.clients) >= s.maxClients {
 			s.mu.Unlock()
 			addr := conn.RemoteAddr()
-			fmt.Printf("[!] connection limit (%d) reached, rejecting %s\n", s.maxClients, addr)
+			s.safePrintf("[!] connection limit (%d) reached, rejecting %s\n", s.maxClients, addr)
 			conn.Close()
 			continue
 		}
@@ -132,13 +139,18 @@ func (s *Server) acceptLoop() {
 		cid := s.nextID
 		s.nextID++
 
-		tcpAddr := conn.RemoteAddr().(*net.TCPAddr)
+		tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
+		if !ok {
+			s.mu.Unlock()
+			conn.Close()
+			continue
+		}
 		ip := tcpAddr.IP.String()
 		port := tcpAddr.Port
 
 		logger, err := NewClientLogger(s.logDir, cid, ip, port)
 		if err != nil {
-			fmt.Printf("[!] could not open log for client %d: %v\n", cid, err)
+			s.safePrintf("[!] could not open log for client %d: %v\n", cid, err)
 		}
 
 		client := &Client{
@@ -150,7 +162,7 @@ func (s *Server) acceptLoop() {
 		s.clients[cid] = client
 		s.mu.Unlock()
 
-		fmt.Printf("[%s] [*] client %d connected from %s:%d\n", ts(), cid, ip, port)
+		s.safePrintf("[%s] [*] client %d connected from %s:%d\n", ts(), cid, ip, port)
 
 		s.wg.Add(1)
 		go client.recvLoop(s)
@@ -217,7 +229,7 @@ func (s *Server) RemoveClient(cid int) {
 	wasInteractive := s.InteractCID() == int32(cid)
 	if wasInteractive {
 		s.SetInteractCID(-1)
-		fmt.Printf("\n[*] interacted client %d gone, back to console\n", cid)
+		s.safePrintf("\n[*] interacted client %d gone, back to console\n", cid)
 	}
 
 	if client.Log != nil {
@@ -226,7 +238,7 @@ func (s *Server) RemoveClient(cid int) {
 	client.Conn.Close()
 
 	addr := client.Addr
-	fmt.Printf("[%s] [*] client %d %s disconnected\n", ts(), cid, addr)
+	s.safePrintf("[%s] [*] client %d %s disconnected\n", ts(), cid, addr)
 }
 
 // InteractCID returns the current interactive mode client ID (-1 = none).

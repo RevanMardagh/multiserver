@@ -24,6 +24,11 @@ func main() {
 	flag.StringVar(&logDir, "l", "logs", "log directory (shorthand)")
 	flag.Parse()
 
+	if port < 0 || port > 65535 {
+		fmt.Fprintf(os.Stderr, "[!] port must be 0-65535, got %d\n", port)
+		os.Exit(1)
+	}
+
 	s := NewServer(bind, port, maxClients, logDir)
 
 	if err := s.Start(); err != nil {
@@ -40,11 +45,11 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		// If in interactive mode, Ctrl-C is handled by readline, not here.
-		// But the signal handler is a fallback for non-readline contexts.
 		fmt.Println("\n[*] caught signal, shutting down...")
 		s.Shutdown()
-		os.Exit(0)
+		if s.rl != nil {
+			s.rl.Close()
+		}
 	}()
 
 	s.RunConsole()
