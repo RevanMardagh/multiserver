@@ -14,11 +14,15 @@ import (
 	"github.com/chzyer/readline"
 )
 
+const historyMaxEntries = 256
+const historyTTL = 24 * time.Hour
+
 // ClientHistory stores metadata from a disconnected client for reconnect tracking.
 type ClientHistory struct {
-	Tag    string
-	OS     string
-	Groups []string // group names the client belonged to
+	Tag       string
+	OS        string
+	Groups    []string // group names the client belonged to
+	DisconnAt time.Time
 }
 
 // Server manages the TCP listener, connected clients, and aliases.
@@ -190,17 +194,19 @@ func (s *Server) acceptLoop() {
 
 		var restored *ClientHistory
 		if h, ok := s.history[ip]; ok {
-			client.Tag = h.Tag
-			client.OS = h.OS
-			if client.OS != "" {
-				client.detected = true
-			}
-			restored = h
-			for _, gname := range h.Groups {
-				if s.groups[gname] == nil {
-					s.groups[gname] = make(map[int]bool)
+			if time.Since(h.DisconnAt) < historyTTL {
+				client.Tag = h.Tag
+				client.OS = h.OS
+				if client.OS != "" {
+					client.detected = true
 				}
-				s.groups[gname][cid] = true
+				restored = h
+				for _, gname := range h.Groups {
+					if s.groups[gname] == nil {
+						s.groups[gname] = make(map[int]bool)
+					}
+					s.groups[gname][cid] = true
+				}
 			}
 			delete(s.history, ip)
 		}
@@ -286,10 +292,24 @@ func (s *Server) RemoveClient(cid int) {
 				}
 			}
 			if client.Tag != "" || client.OS != "" || len(groups) > 0 {
+				if len(s.history) >= historyMaxEntries {
+					var oldestIP string
+					var oldestTime time.Time
+					for hip, h := range s.history {
+						if oldestIP == "" || h.DisconnAt.Before(oldestTime) {
+							oldestIP = hip
+							oldestTime = h.DisconnAt
+						}
+					}
+					if oldestIP != "" {
+						delete(s.history, oldestIP)
+					}
+				}
 				s.history[ip] = &ClientHistory{
-					Tag:    client.Tag,
-					OS:     client.OS,
-					Groups: groups,
+					Tag:       client.Tag,
+					OS:        client.OS,
+					Groups:    groups,
+					DisconnAt: time.Now(),
 				}
 			}
 		}
