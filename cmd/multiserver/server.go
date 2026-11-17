@@ -25,6 +25,7 @@ type Server struct {
 	listener     net.Listener
 	running      atomic.Bool
 	shutdownOnce sync.Once
+	rlOnce       sync.Once
 	wg           sync.WaitGroup
 	bind         string
 	port         int
@@ -100,14 +101,24 @@ func (s *Server) Shutdown() {
 	})
 }
 
+// closeRL closes the readline instance exactly once.
+func (s *Server) closeRL() {
+	s.rlOnce.Do(func() {
+		if s.rl != nil {
+			s.rl.Close()
+		}
+	})
+}
+
 // safePrintf writes formatted output through readline's safe writer
 // when active, falling back to os.Stdout otherwise. Use from background
 // goroutines (acceptLoop, recvLoop, RemoveClient) to avoid corrupting
 // the readline prompt.
 func (s *Server) safePrintf(format string, a ...interface{}) {
 	msg := fmt.Sprintf(format, a...)
-	if s.rl != nil {
-		io.WriteString(s.rl.Stdout(), msg)
+	rl := s.rl
+	if rl != nil {
+		io.WriteString(rl.Stdout(), msg)
 	} else {
 		io.WriteString(os.Stdout, msg)
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Client represents a connected reverse shell client.
@@ -39,8 +40,9 @@ func (c *Client) recvLoop(s *Server) {
 				// Interactive mode: write raw bytes to stdout
 				os.Stdout.Write(raw)
 			} else {
-				// Normal mode: formatted output
-				s.safePrintf("[%s] [%d] %s\n", ts(), c.ID, strings.TrimRight(text, "\r\n"))
+				// Normal mode: formatted output with control chars stripped
+				safe := sanitizeForTerminal(strings.TrimRight(text, "\r\n"))
+				s.safePrintf("[%s] [%d] %s\n", ts(), c.ID, safe)
 			}
 		}
 		if err != nil {
@@ -51,6 +53,24 @@ func (c *Client) recvLoop(s *Server) {
 			break
 		}
 	}
+}
+
+// sanitizeForTerminal strips control characters that could manipulate
+// the operator's terminal (ANSI escapes, etc.). Preserves printable
+// text, tabs, and spaces.
+func sanitizeForTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7F {
+			return -1
+		}
+		if !unicode.IsPrint(r) && !unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // ts returns the current time as HH:MM:SS for console output.

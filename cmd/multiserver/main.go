@@ -47,9 +47,10 @@ func main() {
 		<-sigCh
 		fmt.Println("\n[*] caught signal, shutting down...")
 		s.Shutdown()
-		if s.rl != nil {
-			s.rl.Close()
-		}
+		s.closeRL()
+		// Second signal forces immediate exit
+		<-sigCh
+		os.Exit(1)
 	}()
 
 	s.RunConsole()

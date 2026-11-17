@@ -36,7 +36,7 @@ func (s *Server) RunConsole() error {
 	if err != nil {
 		return fmt.Errorf("readline init: %w", err)
 	}
-	defer rl.Close()
+	defer s.closeRL()
 
 	s.rl = rl
 
