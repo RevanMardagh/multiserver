@@ -20,7 +20,9 @@ func (s *Server) RunConsole() error {
 	}
 
 	if historyFile != "" {
-		os.OpenFile(historyFile, os.O_CREATE|os.O_WRONLY, 0o600)
+		if f, err := os.OpenFile(historyFile, os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			f.Close()
+		}
 	}
 
 	rl, err := readline.NewEx(&readline.Config{
