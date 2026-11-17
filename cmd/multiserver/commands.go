@@ -25,6 +25,9 @@ var commands = map[string]CmdHandler{
 	"alias":    cmdAlias,
 	"run":      cmdRun,
 	"all":      cmdAll,
+	"group":    cmdGroup,
+	"gr":       cmdGroupRun,
+	"grun":     cmdGroupRunAlias,
 }
 
 // Dispatch parses a line and routes it to the appropriate handler.
@@ -309,6 +312,234 @@ func cmdAll(s *Server, args []string) bool {
 	return true
 }
 
+func cmdGroup(s *Server, args []string) bool {
+	if len(args) == 1 {
+		// List all groups
+		s.mu.RLock()
+		if len(s.groups) == 0 {
+			s.mu.RUnlock()
+			fmt.Println("    (no groups)")
+			return true
+		}
+		names := make([]string, 0, len(s.groups))
+		for name := range s.groups {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			members := s.groups[name]
+			ids := make([]int, 0, len(members))
+			for id := range members {
+				ids = append(ids, id)
+			}
+			sort.Ints(ids)
+			idStrs := make([]string, len(ids))
+			for i, id := range ids {
+				idStrs[i] = strconv.Itoa(id)
+			}
+			fmt.Printf("    %s: %d member(s) [%s]\n", name, len(members), strings.Join(idStrs, ", "))
+		}
+		s.mu.RUnlock()
+		return true
+	}
+
+	sub := args[1]
+
+	if sub == "add" {
+		if len(args) < 4 {
+			fmt.Println("[!] usage: group add <name> <id> [id...]")
+			return true
+		}
+		name := args[2]
+		s.mu.Lock()
+		if s.groups[name] == nil {
+			s.groups[name] = make(map[int]bool)
+		}
+		for _, idStr := range args[3:] {
+			cid, err := strconv.Atoi(idStr)
+			if err != nil {
+				fmt.Printf("[!] invalid id '%s', skipping\n", idStr)
+				continue
+			}
+			if _, exists := s.clients[cid]; !exists {
+				fmt.Printf("[!] warning: client %d not connected\n", cid)
+			}
+			s.groups[name][cid] = true
+		}
+		s.mu.Unlock()
+		fmt.Printf("[*] group '%s' updated\n", name)
+		return true
+	}
+
+	if sub == "del" {
+		if len(args) < 3 {
+			fmt.Println("[!] usage: group del <name> [id]")
+			return true
+		}
+		name := args[2]
+		s.mu.Lock()
+		members, exists := s.groups[name]
+		if !exists {
+			s.mu.Unlock()
+			fmt.Printf("[!] no group '%s'\n", name)
+			return true
+		}
+		if len(args) == 3 {
+			// Delete entire group
+			delete(s.groups, name)
+			s.mu.Unlock()
+			fmt.Printf("[*] group '%s' deleted\n", name)
+			return true
+		}
+		// Remove one member
+		cid, err := strconv.Atoi(args[3])
+		if err != nil {
+			s.mu.Unlock()
+			fmt.Println("[!] usage: group del <name> [id]")
+			return true
+		}
+		delete(members, cid)
+		s.mu.Unlock()
+		fmt.Printf("[*] client %d removed from group '%s'\n", cid, name)
+		return true
+	}
+
+	if sub == "show" {
+		if len(args) != 3 {
+			fmt.Println("[!] usage: group show <name>")
+			return true
+		}
+		name := args[2]
+		s.mu.RLock()
+		members, exists := s.groups[name]
+		if !exists {
+			s.mu.RUnlock()
+			fmt.Printf("[!] no group '%s'\n", name)
+			return true
+		}
+		if len(members) == 0 {
+			s.mu.RUnlock()
+			fmt.Printf("    group '%s': (empty)\n", name)
+			return true
+		}
+		ids := make([]int, 0, len(members))
+		for id := range members {
+			ids = append(ids, id)
+		}
+		sort.Ints(ids)
+		for _, id := range ids {
+			client := s.clients[id]
+			if client != nil {
+				fmt.Printf("    %d: %s\n", id, client.Addr)
+			} else {
+				fmt.Printf("    %d: (disconnected)\n", id)
+			}
+		}
+		s.mu.RUnlock()
+		return true
+	}
+
+	fmt.Println("[!] usage: group | group add <name> <id> [id...] | group del <name> [id] | group show <name>")
+	return true
+}
+
+func cmdGroupRun(s *Server, args []string) bool {
+	if len(args) < 3 {
+		fmt.Println("[!] usage: gr <group> <message>")
+		return true
+	}
+	name := args[1]
+	msg := strings.Join(args[2:], " ")
+
+	s.mu.RLock()
+	members, exists := s.groups[name]
+	if !exists {
+		s.mu.RUnlock()
+		fmt.Printf("[!] no group '%s'\n", name)
+		return true
+	}
+	ids := make([]int, 0, len(members))
+	for id := range members {
+		ids = append(ids, id)
+	}
+	s.mu.RUnlock()
+
+	sort.Ints(ids)
+	for _, cid := range ids {
+		if err := s.SendTo(cid, msg); err != nil {
+			fmt.Printf("[!] %v\n", err)
+		}
+	}
+	return true
+}
+
+func cmdGroupRunAlias(s *Server, args []string) bool {
+	if len(args) < 3 {
+		fmt.Println("[!] usage: grun <group> <alias> [arg0] [arg1] ...")
+		return true
+	}
+	groupName := args[1]
+	aliasName := args[2]
+	aliasArgs := args[3:]
+
+	s.mu.RLock()
+	members, exists := s.groups[groupName]
+	if !exists {
+		s.mu.RUnlock()
+		fmt.Printf("[!] no group '%s'\n", groupName)
+		return true
+	}
+	alias, aliasExists := s.aliases[aliasName]
+	ids := make([]int, 0, len(members))
+	for id := range members {
+		ids = append(ids, id)
+	}
+	s.mu.RUnlock()
+
+	if !aliasExists {
+		fmt.Printf("[!] no alias '%s' (try 'alias')\n", aliasName)
+		return true
+	}
+
+	sort.Ints(ids)
+	for _, cid := range ids {
+		client := s.GetClient(cid)
+		if client == nil {
+			fmt.Printf("[!] client %d not connected, skipping\n", cid)
+			continue
+		}
+		if client.OS == "" {
+			fmt.Printf("[!] client %d has no OS flag, skipping\n", cid)
+			continue
+		}
+
+		var cmd string
+		if client.OS == "windows" {
+			cmd = alias.Windows
+		} else {
+			cmd = alias.Linux
+		}
+
+		if cmd == "" {
+			fmt.Printf("[!] alias '%s' has no %s command, skipping client %d\n", aliasName, client.OS, cid)
+			continue
+		}
+
+		resolved, err := substituteArgs(cmd, aliasArgs)
+		if err != nil {
+			needed := countFields(cmd)
+			fmt.Printf("[!] alias '%s' needs %d arg(s)\n", aliasName, needed)
+			return true
+		}
+
+		fmt.Printf("[*] alias '%s' -> client %d (%s): %s\n", aliasName, cid, client.OS, resolved)
+		if err := s.SendTo(cid, resolved); err != nil {
+			fmt.Printf("[!] %v\n", err)
+		}
+	}
+	return true
+}
+
 const helpText = `  list / ls                         show connected clients
   <id> <message>                    send message to client
   all <message>                     broadcast to all clients
@@ -320,5 +551,11 @@ const helpText = `  list / ls                         show connected clients
   alias add <name> <win> ::: <lin>  define alias
   alias del <name>                  remove alias
   run <id> <name> [arg0] [arg1] ... run alias on client ({0}/{1} substituted)
+  group                             list groups
+  group add <name> <id> [id...]     add clients to group
+  group del <name> [id]             delete group or remove member
+  group show <name>                 show group members
+  gr <group> <message>              send message to group
+  grun <group> <alias> [args...]    run alias on group
   exit / quit                       shut down server
 `
