@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/chzyer/readline"
 )
 
 // Server manages the TCP listener, connected clients, and aliases.
@@ -23,6 +25,7 @@ type Server struct {
 	wg          sync.WaitGroup
 	bind        string
 	port        int
+	rl          *readline.Instance
 }
 
 // NewServer creates a new Server with the given configuration.
