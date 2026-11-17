@@ -19,12 +19,17 @@ func (s *Server) RunConsole() error {
 		historyFile = filepath.Join(home, ".multiserver_history")
 	}
 
+	if historyFile != "" {
+		os.OpenFile(historyFile, os.O_CREATE|os.O_WRONLY, 0o600)
+	}
+
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          "> ",
-		HistoryFile:     historyFile,
-		AutoComplete:    s.DynamicCompleter(),
-		InterruptPrompt: "^C",
-		EOFPrompt:       "",
+		Prompt:                 "> ",
+		HistoryFile:            historyFile,
+		AutoComplete:           s.DynamicCompleter(),
+		InterruptPrompt:        "^C",
+		EOFPrompt:              "",
+		DisableAutoSaveHistory: true,
 	})
 	if err != nil {
 		return fmt.Errorf("readline init: %w", err)
@@ -80,6 +85,7 @@ func (s *Server) RunConsole() error {
 		if line == "" {
 			continue
 		}
+		rl.SaveHistory(line)
 		if !s.Dispatch(line) {
 			break
 		}

@@ -6,7 +6,7 @@ __pycache__/
 *.log
 
 # Go
-multiserver
-multiserver.exe
-*.exe
+/multiserver
+/multiserver.exe
+/dist/
 dist/

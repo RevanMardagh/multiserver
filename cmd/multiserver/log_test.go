@@ -78,15 +78,12 @@ func TestClientLoggerHandlesMultilineText(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	// 1 connected line + 3 data lines = 4
-	if len(lines) != 4 {
-		t.Fatalf("expected 4 lines, got %d: %q", len(lines), string(data))
+	// 1 connected line + 1 escaped data line = 2 (newlines escaped, not split)
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), string(data))
 	}
 
-	pattern := regexp.MustCompile(`^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] < line\d$`)
-	for _, line := range lines[1:] {
-		if !pattern.MatchString(line) {
-			t.Errorf("unexpected line format: %q", line)
-		}
+	if !strings.Contains(lines[1], `line1\nline2\nline3`) {
+		t.Errorf("expected escaped newlines in log line: %q", lines[1])
 	}
 }

@@ -19,11 +19,11 @@ type ClientLogger struct {
 // client_{cid}_{ip}_{port}.log inside dir. It writes an initial
 // "connected" line and returns the logger ready for use.
 func NewClientLogger(dir string, cid int, ip string, port int) (*ClientLogger, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create log dir: %w", err)
 	}
 	fname := filepath.Join(dir, fmt.Sprintf("client_%d_%s_%d.log", cid, ip, port))
-	f, err := os.OpenFile(fname, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(fname, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
@@ -37,12 +37,11 @@ func NewClientLogger(dir string, cid int, ip string, port int) (*ClientLogger, e
 func (l *ClientLogger) Log(direction string, text string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for _, line := range strings.Split(text, "\n") {
-		if line == "" {
-			continue
-		}
-		fmt.Fprintf(l.file, "[%s] %s %s\n", timestamp(), direction, line)
+	safe := strings.NewReplacer("\n", "\\n", "\r", "\\r").Replace(text)
+	if safe == "" {
+		return
 	}
+	fmt.Fprintf(l.file, "[%s] %s %s\n", timestamp(), direction, safe)
 	l.file.Sync()
 }
 
