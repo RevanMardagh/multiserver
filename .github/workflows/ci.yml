@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./cmd/multiserver/
+
+      - name: Test
+        run: go test ./cmd/multiserver/ -v -count=1 -timeout 60s
+
+      - name: Race detector
+        run: go test ./cmd/multiserver/ -race -v -count=1 -timeout 60s
