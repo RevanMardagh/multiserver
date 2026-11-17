@@ -16,6 +16,7 @@ type Client struct {
 	OS       string // "windows", "linux", or ""
 	Tag      string
 	Log      *ClientLogger
+	Capture  *CaptureState
 	detected bool
 }
 
@@ -50,6 +51,13 @@ func (c *Client) recvLoop(s *Server) {
 
 			if c.Log != nil {
 				c.Log.Log("<", text)
+			}
+
+			if c.Capture != nil {
+				c.Capture.Process(text, s, c.ID)
+				if c.Capture != nil && c.Capture.IsDone() {
+					c.Capture = nil
+				}
 			}
 
 			if s.InteractCID() == int32(c.ID) {
