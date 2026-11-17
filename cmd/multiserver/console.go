@@ -129,6 +129,21 @@ func (s *Server) DynamicCompleter() *readline.PrefixCompleter {
 		readline.PcItem("tag",
 			readline.PcItemDynamic(s.completeClientIDs),
 		),
+		readline.PcItem("group",
+			readline.PcItem("add"),
+			readline.PcItem("del",
+				readline.PcItemDynamic(s.completeGroupNames),
+			),
+			readline.PcItem("show",
+				readline.PcItemDynamic(s.completeGroupNames),
+			),
+		),
+		readline.PcItem("gr",
+			readline.PcItemDynamic(s.completeGroupNames),
+		),
+		readline.PcItem("grun",
+			readline.PcItemDynamic(s.completeGroupNames),
+		),
 		readline.PcItem("help"),
 		readline.PcItem("exit"),
 		readline.PcItem("quit"),
@@ -151,6 +166,18 @@ func (s *Server) completeAliasNames(line string) []string {
 	s.mu.RLock()
 	names := make([]string, 0, len(s.aliases))
 	for name := range s.aliases {
+		names = append(names, name)
+	}
+	s.mu.RUnlock()
+	sort.Strings(names)
+	return names
+}
+
+// completeGroupNames returns the current group names sorted.
+func (s *Server) completeGroupNames(line string) []string {
+	s.mu.RLock()
+	names := make([]string, 0, len(s.groups))
+	for name := range s.groups {
 		names = append(names, name)
 	}
 	s.mu.RUnlock()

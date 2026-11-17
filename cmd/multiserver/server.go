@@ -20,6 +20,7 @@ type Server struct {
 	nextID       int
 	interactCID  atomic.Int32 // -1 = none, else client ID
 	aliases      map[string]*Alias
+	groups       map[string]map[int]bool // group name -> set of client IDs
 	logDir       string
 	maxClients   int
 	listener     net.Listener
@@ -39,6 +40,7 @@ func NewServer(bind string, port, maxClients int, logDir string) *Server {
 		clients:    make(map[int]*Client),
 		nextID:     1,
 		aliases:    defaultAliases(),
+		groups:     make(map[string]map[int]bool),
 		logDir:     logDir,
 		maxClients: maxClients,
 		bind:       bind,
@@ -235,6 +237,9 @@ func (s *Server) RemoveClient(cid int) {
 	client, ok := s.clients[cid]
 	if ok {
 		delete(s.clients, cid)
+		for _, members := range s.groups {
+			delete(members, cid)
+		}
 	}
 	s.mu.Unlock()
 
