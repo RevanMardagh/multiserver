@@ -1,4 +1,6 @@
 .idea/
+.claude/
+CLAUDE.md
 logs/
 __pycache__/
 *.pyc
